@@ -46,7 +46,7 @@ fn main() -> anyhow::Result<()> {
         EvmBlock::Reth115(block) => block.header(),
     };
 
-    let output = format!("{}.jsonl", header.number);
+    let jsonl_output = format!("{}.jsonl", header.number);
     {
         let EvmDb::InMemory {
             accounts,
@@ -55,7 +55,7 @@ fn main() -> anyhow::Result<()> {
         let contracts = contracts
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
-        let file = File::create(&output)?;
+        let file = File::create(&jsonl_output)?;
         let mut file = std::io::BufWriter::new(file);
         writeln!(
             file,
@@ -108,13 +108,20 @@ fn main() -> anyhow::Result<()> {
             writeln!(file, "{}", account_json)?;
         }
     }
-    let output = format!("{}.rlp", header.number);
+    let rlp_output = format!("{}.rlp", header.number);
     {
         let mut buf = vec![];
         header.encode(&mut buf);
-        let mut file = File::create(&output)?;
+        let mut file = File::create(&rlp_output)?;
         file.write_all(&buf)?;
     }
+
+    println!("Generated {} and {}", jsonl_output, rlp_output);
+    println!("Now run:");
+    println!(
+        "reth init-state --without-evm --chain testnet --header {rlp_output} --header-hash 0x{:x} {jsonl_output} --total-difficulty 0",
+        header.hash_slow(),
+    );
 
     Ok(())
 }
