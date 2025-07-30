@@ -92,7 +92,7 @@ pub enum EvmDb {
     },
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct DbAccount {
     #[serde(rename = "i", alias = "info", default)]
     pub info: DbAccountInfo,
@@ -100,7 +100,7 @@ pub struct DbAccount {
     pub storage: Vec<(U256, U256)>,
 }
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Clone)]
 pub struct DbAccountInfo {
     #[serde(rename = "b", alias = "balance", default)]
     pub balance: U256,

@@ -5,12 +5,9 @@ use alloy::genesis::GenesisAccount;
 use alloy::primitives::{Address, B256};
 use alloy::rlp::Encodable;
 use clap::Parser;
-use revm::primitives::Bytecode;
 use serde::{Deserialize, Serialize};
 use std::{fs::File, io::Write};
-use types::{AbciState, EvmBlock, EvmDb};
-
-mod types;
+use evm_init::types::{AbciState, EvmBlock, EvmDb};
 
 #[derive(Parser)]
 struct Args {
@@ -74,14 +71,7 @@ fn main() -> anyhow::Result<()> {
             let code = if is_eoa {
                 None
             } else {
-                match &contracts[&account.info.code_hash] {
-                    Bytecode::LegacyAnalyzed(x) => Some(x.bytecode().clone()),
-                    Bytecode::LegacyRaw(x) => Some(x.clone()),
-                    _ => panic!(
-                        "Unexpected bytecode type: {:?}",
-                        contracts[&account.info.code_hash]
-                    ),
-                }
+                Some(contracts[&account.info.code_hash].original_bytes())
             };
             let account = GenesisAccount {
                 balance: account.info.balance,
