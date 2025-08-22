@@ -164,20 +164,11 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
 
     fn flush_account(
         mut file: impl Write,
-        db: &DB,
         address: Address,
+        account: DbAccountInfo,
         storage: BTreeMap<B256, B256>,
         contracts: &HashMap<B256, Bytecode>,
     ) -> anyhow::Result<()> {
-        let mut account_key = [0u8; 22];
-        account_key[0..2].copy_from_slice(b"\x45\x61");
-        account_key[2..22].copy_from_slice(address.as_slice());
-
-        let value = db
-            .get(account_key)?
-            .unwrap_or_else(|| panic!("Failed to get account {}", address.encode_hex()));
-        let account = rmp_serde::from_slice::<DbAccountInfo>(&value)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize account: {}", e))?;
         let is_eoa = account.code_hash == KECCAK_EMPTY;
         let storage = if is_eoa { None } else { Some(storage) };
         let account = to_genesis_account(account, contracts, storage);
@@ -217,63 +208,42 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
     // iterate all accounts that has storage
     let mut storage_prefix: [u8; 2 + 20 + 32] = [0u8; 54];
     storage_prefix[0..2].copy_from_slice(&[0x45, 0x73]);
-    let mut current_storage = Default::default();
-    let mut previous_address: Option<Address> = None;
-    for entry in db.prefix_iterator(b"\x45\x73") {
-        // Process each account
-        let entry = entry?;
-        let (key, value) = entry;
-
-        let address = Address::from_slice(&key[2..22]);
-        let storage_key = B256::from_slice(&key[22..22 + 32]);
-        let value = rmp_serde::from_slice::<B256>(&value)?;
-
-        if !matches!(previous_address, Some(addr) if addr == address) {
-            if let Some(previous_address) = previous_address {
-                flush_account(
-                    &mut file,
-                    &db,
-                    previous_address,
-                    std::mem::take(&mut current_storage),
-                    &contracts,
-                )?;
-            }
-            previous_address = Some(address);
-        }
-
-        current_storage.insert(storage_key, value);
-    }
-    if let Some(previous_address) = previous_address {
-        flush_account(
-            &mut file,
-            &db,
-            previous_address,
-            current_storage,
-            &contracts,
-        )?;
-    }
-
-    // iterate all accounts without storage
+    let mut storage_iterator = db.prefix_iterator(b"\x45\x73").peekable();
+    // storage address list is subset of account list, both are sorted
     for entry in db.prefix_iterator(b"\x45\x61") {
         // Process each account
         let entry = entry?;
         let (key, value) = entry;
 
-        let address = Address::from_slice(&key[2..22]);
+        let account_address = Address::from_slice(&key[2..22]);
         let value = rmp_serde::from_slice::<DbAccountInfo>(&value)?;
 
-        let is_eoa = value.code_hash == KECCAK_EMPTY;
-        if !is_eoa {
-            continue;
-        }
+        // Process each account
+        let mut current_storage: BTreeMap<_, _> = Default::default();
 
-        let account = to_genesis_account(value, &contracts, None);
-        let account = GenesisAccountWithAddress {
-            genesis_account: account,
-            address,
-        };
-        let account_json = serde_json::to_string(&account)?;
-        writeln!(file, "{}", account_json)?;
+        loop {
+            let entry = (storage_iterator.peek().unwrap().clone())?;
+            let (key, value) = entry;
+
+            let storage_address = Address::from_slice(&key[2..22]);
+            let storage_key = B256::from_slice(&key[22..22 + 32]);
+            let value = rmp_serde::from_slice::<B256>(&value)?;
+
+            if storage_address != account_address {
+                // If the storage address does not match the account address, break
+                break;
+            }
+
+            current_storage.insert(storage_key, value);
+            storage_iterator.next();
+        }
+        flush_account(
+            &mut file,
+            account_address,
+            value,
+            std::mem::take(&mut current_storage),
+            &contracts,
+        )?;
     }
     Ok(())
 }
