@@ -86,7 +86,7 @@ pub enum EvmDb {
         accounts: Vec<(Address, DbAccount)>,
         contracts: Vec<(B256, Bytecode)>,
     },
-    NoEvmDb,
+    NoEvmDb {},
 }
 
 #[derive(Deserialize, Clone)]

@@ -2,12 +2,13 @@
 
 use alloy::consensus::constants::KECCAK_EMPTY;
 use alloy::genesis::GenesisAccount;
+use alloy::hex::ToHexExt;
 use alloy::primitives::{Address, B256};
 use alloy::rlp::Encodable;
 use clap::Parser;
 use evm_init::types::{AbciState, DbAccount, DbAccountInfo, EvmBlock, EvmDb};
 use revm::primitives::Bytecode;
-use rocksdb::DB;
+use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
@@ -55,7 +56,7 @@ fn main() -> anyhow::Result<()> {
                 accounts,
                 contracts,
             } => handle_in_memory_db(&jsonl_output, accounts, contracts),
-            EvmDb::NoEvmDb => {
+            EvmDb::NoEvmDb {} => {
                 println!("abci_state uses file-backed db, processing...");
                 let file_db_path = abci_state_path
                     .parent()
@@ -150,12 +151,47 @@ fn to_genesis_account(
 }
 
 fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> anyhow::Result<()> {
-    let db = DB::open_default(db_path.into()).unwrap();
     let file = File::create(jsonl_output)?;
     let mut file = std::io::BufWriter::new(file);
     // 0x4561: account
     // 0x4563: contract
     // 0x4573: storage
+
+    fn flush_account(
+        mut file: impl Write,
+        db: &DB,
+        address: Address,
+        storage: BTreeMap<B256, B256>,
+        contracts: &HashMap<B256, Bytecode>,
+    ) -> anyhow::Result<()> {
+        let mut account_key = [0u8; 22];
+        account_key[0..2].copy_from_slice(b"\x45\x61");
+        account_key[2..22].copy_from_slice(address.as_slice());
+
+        let value = db
+            .get(account_key)?
+            .unwrap_or_else(|| panic!("Failed to get account {}", address.encode_hex()));
+        let account = rmp_serde::from_slice::<DbAccountInfo>(&value)
+            .map_err(|e| anyhow::anyhow!("Failed to deserialize account: {}", e))?;
+        let is_eoa = account.code_hash == KECCAK_EMPTY;
+        let storage = if is_eoa { None } else { Some(storage) };
+        let account = to_genesis_account(account, contracts, storage);
+
+        let account = GenesisAccountWithAddress {
+            genesis_account: account,
+            address,
+        };
+        let account_json = serde_json::to_string(&account)?;
+        writeln!(file, "{}", account_json)?;
+        Ok(())
+    }
+
+    let prefix_extractor = rocksdb::SliceTransform::create_fixed_prefix(2);
+    let mut opts = Options::default();
+    opts.create_if_missing(true);
+    opts.set_prefix_extractor(prefix_extractor);
+
+    let db = DB::open(&opts, db_path.into()).unwrap();
 
     // iterate all contracts; for convenience just load all of them into memory
     let mut contracts = HashMap::new();
@@ -167,46 +203,49 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
         let code_hash = B256::from_slice(&key[2..34]);
         contracts.insert(
             code_hash,
-            rmp_serde::from_slice::<Bytecode>(&value)
-                .map_err(|e| anyhow::anyhow!("Failed to deserialize contract: {}", e))?,
+            rmp_serde::from_slice::<Bytecode>(&value).map_err(|e| {
+                anyhow::anyhow!("Failed to deserialize contract: {} {}", key.encode_hex(), e)
+            })?,
         );
     }
 
     // iterate all accounts
     let mut storage_prefix: [u8; 2 + 20 + 32] = [0u8; 54];
     storage_prefix[0..2].copy_from_slice(&[0x45, 0x73]);
-    for entry in db.prefix_iterator(b"\x45\x61") {
+    let mut current_storage = Default::default();
+    let mut previous_address: Option<Address> = None;
+    for entry in db.prefix_iterator(b"\x45\x73") {
         // Process each account
         let entry = entry?;
         let (key, value) = entry;
 
         let address = Address::from_slice(&key[2..22]);
-        let account = rmp_serde::from_slice::<DbAccountInfo>(&value)
-            .map_err(|e| anyhow::anyhow!("Failed to deserialize account: {}", e))?;
-        let is_eoa = account.code_hash == KECCAK_EMPTY;
-        let storage = if is_eoa {
-            None
-        } else {
-            Some(
-                db.prefix_iterator(storage_prefix)
-                    .map(|entry| {
-                        let (key, value) = entry.unwrap();
-                        let storage_key = B256::from_slice(&key[2..34]);
-                        let storage_value = B256::from_slice(&value);
-                        (storage_key, storage_value)
-                    })
-                    .collect(),
-            )
-        };
+        let storage_key = B256::from_slice(&key[22..22 + 32]);
+        let value = rmp_serde::from_slice::<B256>(&value)?;
 
-        let account = to_genesis_account(account, &contracts, storage);
+        if !matches!(previous_address, Some(addr) if addr == address) {
+            if let Some(previous_address) = previous_address {
+                flush_account(
+                    &mut file,
+                    &db,
+                    previous_address,
+                    std::mem::take(&mut current_storage),
+                    &contracts,
+                )?;
+            }
+            previous_address = Some(address);
+        }
 
-        let account = GenesisAccountWithAddress {
-            genesis_account: account,
-            address,
-        };
-        let account_json = serde_json::to_string(&account)?;
-        writeln!(file, "{}", account_json)?;
+        current_storage.insert(storage_key, value);
+    }
+    if let Some(previous_address) = previous_address {
+        flush_account(
+            &mut file,
+            &db,
+            previous_address,
+            current_storage,
+            &contracts,
+        )?;
     }
 
     Ok(())
