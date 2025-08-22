@@ -153,6 +153,11 @@ fn to_genesis_account(
 fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> anyhow::Result<()> {
     let file = File::create(jsonl_output)?;
     let mut file = std::io::BufWriter::new(file);
+    writeln!(
+        file,
+        "{}",
+        serde_json::to_string(&StateRoot { root: B256::ZERO })?
+    )?;
     // 0x4561: account
     // 0x4563: contract
     // 0x4573: storage
