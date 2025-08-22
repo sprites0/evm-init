@@ -54,7 +54,11 @@ fn main() -> anyhow::Result<()> {
     let EvmDb::InMemory {
         accounts,
         contracts,
-    } = evm.state2.evm_db;
+    } = evm.state2.evm_db
+    else {
+        println!("This tool is written before file-backed DB is introduced, so you can skip this.");
+        return Ok(());
+    };
     let mut count = 0;
     let contracts: HashMap<_, _> = contracts.into_iter().collect();
     let accounts: HashMap<_, _> = accounts.into_iter().collect();
