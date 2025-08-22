@@ -222,7 +222,10 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
         let mut current_storage: BTreeMap<_, _> = Default::default();
 
         loop {
-            let entry = (storage_iterator.peek().unwrap().clone())?;
+            let Some(entry) = storage_iterator.peek() else {
+                break;
+            };
+            let entry = (entry.clone())?;
             let (key, value) = entry;
 
             let storage_address = Address::from_slice(&key[2..22]);
