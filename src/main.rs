@@ -214,7 +214,7 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
         );
     }
 
-    // iterate all accounts
+    // iterate all accounts that has storage
     let mut storage_prefix: [u8; 2 + 20 + 32] = [0u8; 54];
     storage_prefix[0..2].copy_from_slice(&[0x45, 0x73]);
     let mut current_storage = Default::default();
@@ -253,5 +253,27 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
         )?;
     }
 
+    // iterate all accounts without storage
+    for entry in db.prefix_iterator(b"\x45\x61") {
+        // Process each account
+        let entry = entry?;
+        let (key, value) = entry;
+
+        let address = Address::from_slice(&key[2..22]);
+        let value = rmp_serde::from_slice::<DbAccountInfo>(&value)?;
+
+        let is_eoa = value.code_hash == KECCAK_EMPTY;
+        if !is_eoa {
+            continue;
+        }
+
+        let account = to_genesis_account(value, &contracts, None);
+        let account = GenesisAccountWithAddress {
+            genesis_account: account,
+            address,
+        };
+        let account_json = serde_json::to_string(&account)?;
+        writeln!(file, "{}", account_json)?;
+    }
     Ok(())
 }
