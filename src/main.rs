@@ -61,7 +61,9 @@ fn main() -> anyhow::Result<()> {
                 let file_db_path = abci_state_path
                     .parent()
                     .unwrap()
-                    .join("evm_db_hub_fast")
+                    .join("evm_db_hub_slow")
+                    .join("checkpoint")
+                    .join(abci_state.exchange.context.height.to_string())
                     .join("EvmState");
                 handle_file_backed_db(&jsonl_output, file_db_path)
             }

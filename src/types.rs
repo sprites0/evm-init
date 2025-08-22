@@ -65,7 +65,13 @@ pub struct AbciState {
 
 #[derive(Deserialize)]
 pub struct Exchange {
+    pub context: Context,
     pub hyper_evm: HyperEvm,
+}
+
+#[derive(Deserialize)]
+pub struct Context {
+    pub height: u64,
 }
 
 #[derive(Deserialize)]
