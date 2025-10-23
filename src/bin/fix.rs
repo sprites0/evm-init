@@ -1,5 +1,5 @@
-use alloy::genesis::GenesisAccount;
-use alloy::primitives::{Address, B256};
+use alloy_genesis::GenesisAccount;
+use alloy_primitives::Address;
 use clap::Parser;
 use evm_init::types::{AbciState, EvmDb};
 use serde::{Deserialize, Serialize};
@@ -13,12 +13,6 @@ struct Args {
     original: String,
     /// Path to the fixed genesis jsonl file e.g., 10000000.fixed.jsonl
     fixed: String,
-}
-
-/// Type to deserialize state root from state dump file.
-#[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
-struct StateRoot {
-    root: B256,
 }
 
 /// An account as in the state dump file. This contains a [`GenesisAccount`] and the account's

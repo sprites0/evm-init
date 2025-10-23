@@ -1,9 +1,6 @@
-use alloy::{
-    consensus::constants::KECCAK_EMPTY,
-    primitives::{Address, Bytes, Log, B256, U256},
-};
-use reth_primitives::{Receipt, SealedBlock, Transaction, TxType};
-use revm::primitives::Bytecode;
+use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_primitives::{Address, Bytes, Log, B256, U256};
+use reth_primitives::{Bytecode, Receipt, SealedBlock, Transaction, TxType};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -19,6 +16,14 @@ pub struct BlockAndReceipts {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum EvmBlock {
     Reth115(SealedBlock),
+}
+
+impl EvmBlock {
+    pub fn header(&self) -> alloy_consensus::Header {
+        match self {
+            EvmBlock::Reth115(block) => block.header().clone(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

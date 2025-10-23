@@ -1,23 +1,62 @@
 // Using rmp(rust-messagepack), read ~/abci_state.rmp.
 
-use alloy::consensus::constants::KECCAK_EMPTY;
-use alloy::genesis::GenesisAccount;
-use alloy::hex::ToHexExt;
-use alloy::primitives::{Address, B256};
-use alloy::rlp::Encodable;
+use alloy_consensus::constants::KECCAK_EMPTY;
+use alloy_genesis::GenesisAccount;
+use alloy_primitives::hex::ToHexExt;
+use alloy_primitives::{Address, B256, Bytes};
+use alloy_rlp::Encodable;
+use anyhow::Context;
+use aws_sdk_s3::Client;
 use clap::Parser;
-use evm_init::types::{AbciState, DbAccount, DbAccountInfo, EvmBlock, EvmDb};
-use revm::primitives::Bytecode;
+use evm_init::types::{AbciState, DbAccount, DbAccountInfo, EvmDb};
+use evm_init::{download_block, rmp_path, HlHeader};
+use reth_primitives::Bytecode;
 use rocksdb::{Options, DB};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::path::PathBuf;
 use std::{fs::File, io::Write};
 
+#[derive(Serialize, Deserialize)]
+enum BytecodeSerialized {
+    LegacyRaw(Bytes),
+    LegacyAnalyzed(LegacyAnalyzedBytecode),
+}
+
+/// Legacy analyzed
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub struct LegacyAnalyzedBytecode {
+    /// Bytecode with 32 zero bytes padding.
+    bytecode: Bytes,
+    /// Original bytes length.
+    original_len: usize,
+    // Jump table.
+    // jump_table: JumpTable,
+}
+
+impl BytecodeSerialized {
+    fn original_bytes(&self) -> Bytes {
+        match self {
+            Self::LegacyRaw(bytes) => bytes.clone(),
+            Self::LegacyAnalyzed(lab) => lab
+                .bytecode
+                .slice(..lab.original_len),
+        }
+    }
+}
+
 #[derive(Parser)]
 struct Args {
     /// Path to the abci state
     file: String,
+
+    /// S3 bucket name for downloading block receipts
+    #[arg(short, long, default_value = "hl-testnet-evm-blocks")]
+    bucket: String,
+
+    /// AWS region
+    #[arg(short, long, default_value = "ap-northeast-1")]
+    region: String,
 }
 
 /// Type to deserialize state root from state dump file.
@@ -37,7 +76,8 @@ struct GenesisAccountWithAddress {
     address: Address,
 }
 
-fn main() -> anyhow::Result<()> {
+#[tokio::main]
+async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     let abci_state_path: PathBuf = args.file.into();
     let file = File::open(&abci_state_path)?;
@@ -45,9 +85,35 @@ fn main() -> anyhow::Result<()> {
 
     let abci_state: AbciState = rmp_serde::decode::from_read(&mut reader)?;
     let evm = abci_state.exchange.hyper_evm;
-    let header = match &evm.latest_block2 {
-        EvmBlock::Reth115(block) => block.header(),
-    };
+    let header = evm.latest_block2.header();
+    let block_number = header.number;
+
+    // Download block from S3 to get receipts
+    println!(
+        "Downloading block {} from S3 to get receipts...",
+        block_number
+    );
+    let config = aws_config::defaults(aws_config::BehaviorVersion::latest())
+        .region(aws_config::Region::new(args.region.clone()))
+        .load()
+        .await;
+    let client = Client::new(&config);
+    let key = rmp_path(block_number);
+    let block_and_receipts = download_block(&client, &args.bucket, &key)
+        .await
+        .context(format!("Failed to download block {}", block_number))?;
+
+    // Convert LegacyReceipt to reth receipts for processing
+    let receipts: Vec<_> = block_and_receipts
+        .receipts
+        .into_iter()
+        .map(|r| r.into())
+        .collect();
+
+    let system_tx_count = block_and_receipts.system_txs.len() as u64;
+
+    // Create HlHeader with actual receipts from S3
+    let header = HlHeader::from_ethereum_header(header, &receipts, system_tx_count);
 
     let jsonl_output = format!("{}.jsonl", header.number);
     {
@@ -80,7 +146,7 @@ fn main() -> anyhow::Result<()> {
     println!("Generated {} and {}", jsonl_output, rlp_output);
     println!("Now run:");
     println!(
-        "reth init-state --without-evm --chain testnet --header {rlp_output} --header-hash 0x{:x} {jsonl_output} --total-difficulty 0",
+        "reth-hl init-state --without-evm --chain testnet --header {rlp_output} --header-hash 0x{:x} {jsonl_output} --total-difficulty 0",
         header.hash_slow(),
     );
 
@@ -201,9 +267,17 @@ fn handle_file_backed_db(jsonl_output: &String, db_path: impl Into<PathBuf>) -> 
         let code_hash = B256::from_slice(&key[2..34]);
         contracts.insert(
             code_hash,
-            rmp_serde::from_slice::<Bytecode>(&value).map_err(|e| {
-                anyhow::anyhow!("Failed to deserialize contract: {} {}", key.encode_hex(), e)
-            })?,
+            Bytecode::new_raw(
+                rmp_serde::from_slice::<BytecodeSerialized>(&value)
+                    .map_err(|e| {
+                        anyhow::anyhow!(
+                            "Failed to deserialize contract: {} {}",
+                            key.encode_hex(),
+                            e
+                        )
+                    })?
+                    .original_bytes(),
+            ),
         );
     }
 
